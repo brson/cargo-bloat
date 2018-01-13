@@ -53,6 +53,7 @@ Options:
     --release               Build artifacts in release mode, with optimizations
     --example NAME          Build only the specified example
     --crates                Per crate bloatedness
+    --diff PATH             Diff crates
     --filter CRATE          Filter functions by crate
     --split-std             Split the 'std' crate to original crates like core, alloc, etc.
     --full-fn               Print full function name with hash values
@@ -76,6 +77,7 @@ struct Flags {
     flag_release: bool,
     flag_example: Option<String>,
     flag_crates: bool,
+    flag_diff: Option<String>,
     flag_filter: Option<String>,
     flag_split_std: bool,
     flag_full_fn: bool,
@@ -100,7 +102,15 @@ struct Data {
     text_size: u64,
 }
 
+#[derive(Clone, Copy, PartialEq, Debug)]
+enum CrateKind {
+    Bin,
+    Cdynlib,
+}
+
 struct CrateData {
+    name: String,
+    kind: CrateKind,
     data: Data,
     crates: Vec<String>,
 }
@@ -136,22 +146,40 @@ fn real_main(flags: Flags, config: &mut Config) -> CliResult {
 
     let crate_data = process_crate(&flags, config)?;
 
-    let mut table = Table::new(&["File", ".text", "Size", "Name"]);
+    let term_width = if !flags.flag_wide { term_size::dimensions().map(|v| v.0) } else { None };
 
-    let term_width = if !flags.flag_wide {
-        term_size::dimensions().map(|v| v.0)
-    } else {
-        None
-    };
-    table.set_width(term_width);
+    if let Some(ref crate_path) = flags.flag_diff {
+        let crate_path = fs::canonicalize(crate_path).unwrap();
+        let mut diff_config = create_config(crate_path);
+        let crate_data_2 = process_crate(&flags, &mut diff_config)?;
 
-    if flags.flag_crates {
-        print_crates(crate_data, &flags, &mut table);
+        if    crate_data.name != crate_data_2.name
+           || crate_data.kind != crate_data_2.kind
+        {
+            return Err(CargoError::from(
+                format!("Current crate and reference crate are not the same: {} != {}.",
+                        crate_data.name, crate_data_2.name)
+            ).into());
+        }
+
+        let mut table = Table::new(&["T", "Diff", "After", "Before", "Name"]);
+        table.set_width(term_width);
+
+        print_methods_diff(crate_data, crate_data_2, &flags, &mut table);
+
+        print!("{}", table);
     } else {
-        print_methods(crate_data, &flags, &mut table);
+        let mut table = Table::new(&["File", ".text", "Size", "Name"]);
+        table.set_width(term_width);
+
+        if flags.flag_crates {
+            print_crates(crate_data, &flags, &mut table);
+        } else {
+            print_methods(crate_data, &flags, &mut table);
+        }
+
+        print!("{}", table);
     }
-
-    print!("{}", table);
 
     Ok(())
 }
@@ -201,6 +229,8 @@ fn process_crate(flags: &Flags, config: &mut Config) -> CargoResult<CrateData> {
         );
     }
 
+    let pkg_name = workspace.current()?.name();
+
     let comp = ops::compile(&workspace, &opt)?;
 
     for (_, lib) in comp.libraries {
@@ -208,7 +238,9 @@ fn process_crate(flags: &Flags, config: &mut Config) -> CargoResult<CrateData> {
             let path_str = path.to_str().unwrap();
             if path_str.ends_with(".so") || path_str.ends_with(".dylib") {
                 return Ok(CrateData {
+                    name: pkg_name.to_string(),
                     data: collect_data(&path)?,
+                    kind: CrateKind::Cdynlib,
                     crates,
                 });
             }
@@ -217,7 +249,9 @@ fn process_crate(flags: &Flags, config: &mut Config) -> CargoResult<CrateData> {
 
     if !comp.binaries.is_empty() {
         return Ok(CrateData {
+            name: pkg_name.to_string(),
             data: collect_data(&comp.binaries[0])?,
+            kind: CrateKind::Bin,
             crates,
         });
     }
@@ -282,16 +316,13 @@ fn print_methods(mut d: CrateData, flags: &Flags, table: &mut Table) {
 
         other_size -= sym.size;
 
-        let mut name = sym.name.clone();
+        let name = if !flags.flag_full_fn {
+            trim_hash(&sym.name)
+        } else {
+            &sym.name
+        };
 
-        // crate::mod::fn::h5fbe0f2f0b5c7342 -> crate::mod::fn
-        if !flags.flag_full_fn {
-            if let Some(pos) = name.bytes().rposition(|b| b == b':') {
-                name.drain((pos - 1)..);
-            }
-        }
-
-        push_row(table, percent_file, percent_text, sym.size, name);
+        push_row(table, percent_file, percent_text, sym.size, name.to_owned());
 
         if n != 0 && table.rows_count() == n {
             break;
@@ -308,6 +339,119 @@ fn print_methods(mut d: CrateData, flags: &Flags, table: &mut Table) {
     }
 
     push_total(table, dd);
+}
+
+fn print_methods_diff(
+    mut crate_1: CrateData,
+    mut crate_2: CrateData,
+    flags: &Flags,
+    table: &mut Table,
+) {
+    #[derive(Clone, Copy, PartialEq, Debug)]
+    enum DiffKind {
+        Equal,
+        Added,
+        Changed,
+        Removed,
+    }
+
+    crate_1.data.symbols.sort_by_key(|v| v.size);
+    crate_2.data.symbols.sort_by_key(|v| v.size);
+
+    let dd1 = &crate_1.data;
+    let dd2 = &crate_2.data;
+
+    let mut list = Vec::with_capacity(dd1.symbols.len());
+
+    let mut names = Vec::with_capacity(dd2.symbols.len());
+    for sym in &dd2.symbols {
+        names.push(sym);
+    }
+
+    let mut methods2 = HashMap::with_capacity(dd2.symbols.len());
+    for sym in &dd2.symbols {
+        methods2.insert(&sym.name, sym);
+    }
+
+    for sym1 in &dd1.symbols {
+        let name1 = trim_hash(&sym1.name);
+        let mut kind = DiffKind::Removed;
+        let mut size1 = 0;
+        let mut size2 = sym1.size;
+
+        if let Some(sym2) = methods2.get(&sym1.name) {
+            if sym1.size == sym2.size {
+                kind = DiffKind::Equal;
+            } else {
+                size1 = sym1.size;
+                size2 = sym2.size;
+                kind = DiffKind::Changed;
+            }
+        }
+
+        if let Some(pos) = names.iter().position(|n| n.name == sym1.name) {
+            names.remove(pos);
+        }
+
+        list.push((&sym1.name, size1, size2, kind));
+    }
+
+//    for sym in names {
+//        list.push((&sym.name, sym.size, 0, DiffKind::Added));
+//    }
+
+    list.sort_by(|a, b| {
+        let d1 = (a.1 as i64 - a.2 as i64).abs();
+        let d2 = (b.1 as i64 - b.2 as i64).abs();
+        d2.cmp(&d1)
+    });
+
+    let mut total = 0;
+    for &(_, new_size, old_size, _) in list.iter().filter(|v| v.3 != DiffKind::Equal) {
+        total += new_size as i64 - old_size as i64;
+    }
+
+    let n = if flags.flag_n == 0 { list.len() } else { flags.flag_n };
+
+    for &(name, new_size, old_size, kind) in list.iter().filter(|v| v.3 != DiffKind::Equal).take(n) {
+        if let Some(ref crate_name) = flags.flag_filter {
+            if !name.contains(crate_name) {
+                continue;
+            }
+        }
+
+        let kind_s = match kind {
+            DiffKind::Added => "+",
+            DiffKind::Changed => "~",
+            DiffKind::Removed => "-",
+            DiffKind::Equal => "=",
+        }.to_string();
+
+        let diff = new_size as i64 - old_size as i64;
+        let diff_s = format_diff_size(diff);
+
+        let new_size = format_size(new_size);
+        let old_size = format_size(old_size);
+
+        let name = if !flags.flag_full_fn {
+            trim_hash(&name)
+        } else {
+            &name
+        }.to_string();
+
+        table.push(&[kind_s, diff_s, new_size, old_size, name]);
+    }
+
+    table.push(&["".to_string(), format_diff_size(total), "-".to_string(), "-".to_string(), "Total".to_string()]);
+}
+
+// crate::mod::fn::h5fbe0f2f0b5c7342 -> crate::mod::fn
+fn trim_hash(s: &str) -> &str {
+    if let Some(pos) = s.bytes().rposition(|b| b == b':') {
+        &s[..(pos - 1)]
+    } else {
+        s
+    }
 }
 
 fn print_crates(d: CrateData, flags: &Flags, table: &mut Table) {
@@ -400,4 +544,15 @@ fn format_size(bytes: u64) -> String {
     } else {
         format!("{}B", bytes)
     }
+}
+
+fn format_diff_size(bytes: i64) -> String {
+    let mut s = format_size(bytes.abs() as u64);
+    if bytes < 0 {
+        s.insert(0, '-');
+    } else if bytes > 0 {
+        s.insert(0, '+');
+    }
+
+    s
 }
