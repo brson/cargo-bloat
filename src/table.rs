@@ -38,7 +38,7 @@ impl Table {
     pub fn rows_count(&self) -> usize {
         debug_assert!(!self.data.is_empty());
 
-        self.data.len() / self.columns_count
+        self.data.len() / self.columns_count - 1
     }
 
     pub fn cell(&self, row: usize, col: usize) -> &str {
@@ -48,7 +48,7 @@ impl Table {
 
 impl fmt::Display for Table {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        let rows = self.rows_count();
+        let rows = self.rows_count() + 1; // plus header
 
         let mut max_len_list = Vec::new();
         for col in 0..self.columns_count {

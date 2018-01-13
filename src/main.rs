@@ -239,8 +239,8 @@ fn process_crate(flags: &Flags, config: &mut Config) -> CargoResult<CrateData> {
             if path_str.ends_with(".so") || path_str.ends_with(".dylib") {
                 return Ok(CrateData {
                     name: pkg_name.to_string(),
-                    data: collect_data(&path)?,
                     kind: CrateKind::Cdynlib,
+                    data: collect_data(&path)?,
                     crates,
                 });
             }
@@ -250,8 +250,8 @@ fn process_crate(flags: &Flags, config: &mut Config) -> CargoResult<CrateData> {
     if !comp.binaries.is_empty() {
         return Ok(CrateData {
             name: pkg_name.to_string(),
-            data: collect_data(&comp.binaries[0])?,
             kind: CrateKind::Bin,
+            data: collect_data(&comp.binaries[0])?,
             crates,
         });
     }
