@@ -349,7 +349,7 @@ fn print_methods_diff(
 ) {
     #[derive(Clone, Copy, PartialEq, Debug)]
     enum DiffKind {
-        Equal,
+//        Equal,
         Added,
         Changed,
         Removed,
@@ -361,11 +361,10 @@ fn print_methods_diff(
     let dd1 = &crate_1.data;
     let dd2 = &crate_2.data;
 
-    let mut list = Vec::with_capacity(dd1.symbols.len());
 
-    let mut names = Vec::with_capacity(dd2.symbols.len());
-    for sym in &dd2.symbols {
-        names.push(sym);
+    let mut methods1 = HashMap::with_capacity(dd1.symbols.len());
+    for sym in &dd1.symbols {
+        methods1.insert(&sym.name, sym);
     }
 
     let mut methods2 = HashMap::with_capacity(dd2.symbols.len());
@@ -373,32 +372,71 @@ fn print_methods_diff(
         methods2.insert(&sym.name, sym);
     }
 
-    for sym1 in &dd1.symbols {
-        let name1 = trim_hash(&sym1.name);
-        let mut kind = DiffKind::Removed;
-        let mut size1 = 0;
-        let mut size2 = sym1.size;
+    let mut list1 = Vec::with_capacity(dd1.symbols.len());
+    let mut list2 = Vec::with_capacity(dd2.symbols.len());
 
-        if let Some(sym2) = methods2.get(&sym1.name) {
-            if sym1.size == sym2.size {
-                kind = DiffKind::Equal;
-            } else {
-                size1 = sym1.size;
-                size2 = sym2.size;
-                kind = DiffKind::Changed;
+    // Remove equal.
+    'outer1: for sym1 in &dd1.symbols {
+        for std_name in STD_CRATES {
+            if sym1.name.contains(std_name) {
+                continue 'outer1;
             }
         }
 
-        if let Some(pos) = names.iter().position(|n| n.name == sym1.name) {
-            names.remove(pos);
+        if let Some(sym2) = methods2.get(&sym1.name).cloned() {
+            if sym1.size == sym2.size {
+                continue;
+            }
         }
 
-        list.push((&sym1.name, size1, size2, kind));
+        list1.push(sym1);
     }
 
-//    for sym in names {
-//        list.push((&sym.name, sym.size, 0, DiffKind::Added));
+    'outer2: for sym2 in &dd2.symbols {
+        for std_name in STD_CRATES {
+            if sym2.name.contains(std_name) {
+                continue 'outer2;
+            }
+        }
+
+        if let Some(sym1) = methods1.get(&sym2.name).cloned() {
+            if sym1.size == sym2.size {
+                continue;
+            }
+        }
+
+        list2.push(sym2);
+    }
+
+    println!("{} {}", list1.len(), list2.len());
+
+    let mut list = Vec::with_capacity(list1.len());
+    'outer3: for sym1 in &list1 {
+        let mut size2 = 0;
+
+        for sym2 in &list2 {
+            if trim_hash(&sym1.name) == trim_hash(&sym2.name) {
+                if sym1.size == sym2.size {
+                    continue 'outer3;
+                } else {
+                    size2 = sym2.size;
+                }
+            }
+        }
+
+        let kind = if size2 == 0 { DiffKind::Added } else { DiffKind::Changed };
+
+        list.push((&sym1.name, sym1.size, size2, kind));
+    }
+
+//    for sym2 in &list2 {
+//        for d in &list {
+//
+//        }
 //    }
+
+    println!("{}", list.len());
+
 
     list.sort_by(|a, b| {
         let d1 = (a.1 as i64 - a.2 as i64).abs();
@@ -407,13 +445,13 @@ fn print_methods_diff(
     });
 
     let mut total = 0;
-    for &(_, new_size, old_size, _) in list.iter().filter(|v| v.3 != DiffKind::Equal) {
+    for &(_, new_size, old_size, _) in list.iter() {
         total += new_size as i64 - old_size as i64;
     }
 
     let n = if flags.flag_n == 0 { list.len() } else { flags.flag_n };
 
-    for &(name, new_size, old_size, kind) in list.iter().filter(|v| v.3 != DiffKind::Equal).take(n) {
+    for &(name, new_size, old_size, kind) in list.iter().take(n) {
         if let Some(ref crate_name) = flags.flag_filter {
             if !name.contains(crate_name) {
                 continue;
@@ -424,7 +462,7 @@ fn print_methods_diff(
             DiffKind::Added => "+",
             DiffKind::Changed => "~",
             DiffKind::Removed => "-",
-            DiffKind::Equal => "=",
+//            DiffKind::Equal => "=",
         }.to_string();
 
         let diff = new_size as i64 - old_size as i64;
