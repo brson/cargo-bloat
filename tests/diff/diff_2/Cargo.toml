@@ -1,0 +1,6 @@
+[package]
+name = "diff_1"
+version = "0.1.0"
+authors = ["Reizner Evgeniy <razrfalcon@gmail.com>"]
+
+[dependencies]
