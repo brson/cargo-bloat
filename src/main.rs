@@ -1,3 +1,5 @@
+#![allow(unused)]
+
 extern crate goblin;
 extern crate memmap;
 extern crate multimap;
@@ -89,6 +91,14 @@ struct Args {
     #[structopt(long = "crates")]
     /// Per crate bloatedness
     crates: bool,
+
+    #[structopt(long = "stuff")]
+    /// Per crate stuffness
+    stuff: bool,
+
+    #[structopt(long = "stuff2")]
+    /// Per crate stuffness
+    stuff2: bool,
 
     #[structopt(long = "filter", value_name = "CRATE|REGEXP")]
     /// Filter functions by crate
@@ -245,6 +255,10 @@ fn main() {
 
     let mut table = if args.crates {
         Table::new(&["File", ".text", "Size", "Name"])
+    } else if args.stuff {
+        Table::new(&["Count", "Symbol", "Crates"])
+    } else if args.stuff2 {
+        Table::new(&["Count", "Symbol", "Crates"])
     } else {
         Table::new(&["File", ".text", "Size", "Crate", "Name"])
     };
@@ -259,6 +273,10 @@ fn main() {
 
     if args.crates {
         print_crates(crate_data, &args, &mut table);
+    } else if args.stuff {
+        print_stuff(crate_data, &args, &mut table);
+    } else if args.stuff2 {
+        print_stuff2(crate_data, &args, &mut table);
     } else {
         print_methods(crate_data, &args, &mut table);
     }
@@ -879,4 +897,81 @@ fn format_size(bytes: u64) -> String {
     } else {
         format!("{}B", bytes)
     }
+}
+
+
+
+fn print_stuff(mut d: CrateData, args: &Args, table: &mut Table) {
+    let mut recs = build_records(&mut d.deps_symbols);
+    for rec in recs {
+        table.push(&[rec.count.to_string(), rec.symbol, rec.crates.join("/")]);
+    }
+}
+
+struct MyRecord {
+    symbol: String,
+    count: usize,
+    crates: Vec<String>,
+}
+
+fn build_records(d: &MultiMap<String, String>) -> Vec<MyRecord> {
+    let mut recs = vec![];
+    for (name, crates) in d {
+        recs.push(MyRecord {
+            symbol: name.clone(),
+            count: crates.len(),
+            crates: crates.clone(),
+        });
+    }
+    recs.sort_by(|x, y| x.count.cmp(&y.count));
+    recs
+}
+
+fn print_stuff2(mut d: CrateData, args: &Args, table: &mut Table) {
+    let mut recs = build_records2(&mut d.deps_symbols);
+    for rec in recs {
+        table.push(&[rec.count.to_string(), rec.symbol, format!("\n{}", rec.crates.join(", "))]);
+    }
+}
+
+struct MyRecord2 {
+    symbol: String,
+    count: usize,
+    crates: Vec<String>,
+}
+
+use std::collections::{BTreeMap, BTreeSet};
+
+fn build_records2(d: &MultiMap<String, String>) -> Vec<MyRecord2> {
+    let mut clean_name_to_hash: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
+    for (name, crates) in d {
+        let elts = name.split("::").count();
+        let clean_name;
+        let hash;
+        if elts > 1 {
+            clean_name = name.split("::").take(elts - 1).collect::<Vec<&str>>().join("::");
+            hash = name.rsplit("::").take(1).collect::<String>();
+        } else {
+            clean_name = name.to_string();
+            hash = "<none>".to_string();
+        }
+        drop(hash);
+        clean_name_to_hash
+            .entry(clean_name)
+            .or_insert(BTreeSet::new())
+            .append(&mut crates.iter().cloned().collect());
+    }
+    let mut recs = vec![];
+    for (name, crates) in clean_name_to_hash {
+        recs.push(MyRecord2 {
+            symbol: name.clone(),
+            count: crates.iter().count(),
+            crates: crates.into_iter().collect(),
+        });
+    }
+
+    recs.sort_by(|x, y| x.symbol.cmp(&y.symbol));
+    recs.sort_by(|x, y| x.count.cmp(&y.count));
+
+    recs
 }
