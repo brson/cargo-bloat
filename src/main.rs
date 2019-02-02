@@ -138,10 +138,9 @@ struct CrateData {
     std_crates: Vec<String>,
     dep_crates: Vec<String>,
     deps_symbols: MultiMap<String, String>, // symbol, crate
-    symbol_info: MultiMap<String, SymbolInfo>
 }
 
-#[Clone, Copy]
+#[derive(Clone)]
 struct SymbolInfo {
     hash: String,
     fnsz: u64,
@@ -264,7 +263,7 @@ fn main() {
     let mut table = if args.crates {
         Table::new(&["File", ".text", "Size", "Name"])
     } else if args.stuff {
-        Table::new(&["Count", "Symbol", "Crates"])
+        Table::new(&["Bytes", "Count", "Symbol"])
     } else if args.stuff2 {
         Table::new(&["Count", "Symbol", "Crates"])
     } else {
@@ -437,8 +436,6 @@ fn process_crate(args: &Args) -> Result<CrateData, Error> {
 
     let deps_symbols = collect_deps_symbols(rlib_paths.clone())?;
 
-    let symbol_info = collect_symbol_info(rlib_paths)?;
-
     let prepare_path = |path: &path::Path| {
         path.strip_prefix(workspace_root).unwrap_or(path).to_str().unwrap().to_string()
     };
@@ -452,7 +449,6 @@ fn process_crate(args: &Args) -> Result<CrateData, Error> {
                 std_crates,
                 dep_crates,
                 deps_symbols,
-                symbol_info,
             });
         }
     }
@@ -552,32 +548,6 @@ fn collect_deps_symbols(
 
     for (_, v) in map.iter_all_mut() {
         v.dedup();
-    }
-
-    Ok(map)
-}
-
-fn collect_symbol_info(
-    libs: Vec<(String, path::PathBuf)>
-) -> Result<MultiMap<String, SymbolInfo>, Error> {
-    let mut map = MultiMap::new();
-
-    for (name, path) in libs {
-        match collect_self_data(&path) {
-            Ok(obj_data) => {
-                for sym in obj_data.symbols {
-                    let (sym_name, hash) = sym_to_sym_hash(&sym.name);
-                    map.insert(sym_name, SymbolInfo {
-                        hash: hash,
-                        fnsz: sym.size,
-                        crate_: name.clone(),
-                    });
-                }
-            }
-            Err(e) => {
-                eprintln!("couldn't parse rlib: {}", e);
-            }
-        }        
     }
 
     Ok(map)
@@ -945,50 +915,14 @@ fn format_size(bytes: u64) -> String {
 
 
 fn print_stuff(mut d: CrateData, args: &Args, table: &mut Table) {
-    let mut recs = build_records(&d.symbol_info);
-    for rec in recs {
-        table.push(&[rec.count.to_string(), rec.symbol, rec.crates.join("/")]);
-    }
 }
 
-struct MyRecord {
-    symbol: String,
-    summed_size: u64,
-    sym_count: u64,
-    instances: Vec<(String, u64)>, // crate, symbol size
-}
-
-fn build_records(d: &MultiMap<String, SymbolInfo>) -> Vec<MyRecord> {
-    let mut total_size = 0;
-    let mut total_sym_count = 0;
-
-    let mut recs = vec![];
-    for (name, infos) in d {
-        let summed_size = 0;
-        let sym_count = 0;
-        for info in infos.iter() {
-            summed_size += info.fnsz;
-            total_size += info.fnsz;
-            sym_count += 1;
-            total_sym_count += 1;
-        }
-        let instances = infos.iter().cloned().map(|info| (info.crate_, info.fnsz));
-        recs.push(MyRecord {
-            symbol: name,
-            summed_size: total_size,
-            sym_count: total_sym_count,
-            instances: instances.collect(),
-        });
-    }
-    recs.sort_by(|x, y| x.count.cmp(&y.count));
-    recs.sort_by(|x, y| x.summed_size.cmp(&y.summed_size));
-    recs
-}
 
 fn print_stuff2(mut d: CrateData, args: &Args, table: &mut Table) {
     let mut recs = build_records2(&mut d.deps_symbols);
     for rec in recs {
-        table.push(&[rec.count.to_string(), rec.symbol, format!("\n{}", rec.crates.join(", "))]);
+        //table.push(&[rec.count.to_string(), rec.symbol, format!("\n{}", rec.crates.join(", "))]);
+        table.push(&[rec.count.to_string(), rec.symbol, rec.crates.len().to_string()]);
     }
 }
 
@@ -1016,19 +950,23 @@ fn sym_to_sym_hash(name: &str) -> (String, String) {
 }
 
 fn build_records2(d: &MultiMap<String, String>) -> Vec<MyRecord2> {
-    let mut clean_name_to_hash: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
+    let mut clean_name_to_hash: BTreeMap<String, (BTreeSet<String>, usize)> = BTreeMap::new();
     for (name, crates) in d {
         let (clean_name, hash) = sym_to_sym_hash(name);
         clean_name_to_hash
             .entry(clean_name)
-            .or_insert(BTreeSet::new())
-            .append(&mut crates.iter().cloned().collect());
+            .and_modify(|&mut (ref mut crate_set, ref mut sym_count)| {
+                crate_set.append(&mut crates.iter().cloned().collect());
+                *sym_count += crates.len();
+            })
+            
+            .or_insert((BTreeSet::from(crates.into_iter().cloned().collect()), crates.len()));
     }
     let mut recs = vec![];
-    for (name, crates) in clean_name_to_hash {
+    for (name, (crates, count)) in clean_name_to_hash {
         recs.push(MyRecord2 {
             symbol: name.clone(),
-            count: crates.iter().count(),
+            count: count,
             crates: crates.into_iter().collect(),
         });
     }
