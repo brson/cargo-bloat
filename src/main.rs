@@ -141,6 +141,7 @@ struct CrateData {
     symbol_info: MultiMap<String, SymbolInfo>
 }
 
+#[Clone, Copy]
 struct SymbolInfo {
     hash: String,
     fnsz: u64,
@@ -944,7 +945,7 @@ fn format_size(bytes: u64) -> String {
 
 
 fn print_stuff(mut d: CrateData, args: &Args, table: &mut Table) {
-    let mut recs = build_records(&mut d.deps_symbols);
+    let mut recs = build_records(&d.symbol_info);
     for rec in recs {
         table.push(&[rec.count.to_string(), rec.symbol, rec.crates.join("/")]);
     }
@@ -952,20 +953,35 @@ fn print_stuff(mut d: CrateData, args: &Args, table: &mut Table) {
 
 struct MyRecord {
     symbol: String,
-    count: usize,
-    crates: Vec<String>,
+    summed_size: u64,
+    sym_count: u64,
+    instances: Vec<(String, u64)>, // crate, symbol size
 }
 
-fn build_records(d: &MultiMap<String, String>) -> Vec<MyRecord> {
+fn build_records(d: &MultiMap<String, SymbolInfo>) -> Vec<MyRecord> {
+    let mut total_size = 0;
+    let mut total_sym_count = 0;
+
     let mut recs = vec![];
-    for (name, crates) in d {
+    for (name, infos) in d {
+        let summed_size = 0;
+        let sym_count = 0;
+        for info in infos.iter() {
+            summed_size += info.fnsz;
+            total_size += info.fnsz;
+            sym_count += 1;
+            total_sym_count += 1;
+        }
+        let instances = infos.iter().cloned().map(|info| (info.crate_, info.fnsz));
         recs.push(MyRecord {
-            symbol: name.clone(),
-            count: crates.len(),
-            crates: crates.clone(),
+            symbol: name,
+            summed_size: total_size,
+            sym_count: total_sym_count,
+            instances: instances.collect(),
         });
     }
     recs.sort_by(|x, y| x.count.cmp(&y.count));
+    recs.sort_by(|x, y| x.summed_size.cmp(&y.summed_size));
     recs
 }
 
