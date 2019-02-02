@@ -964,8 +964,9 @@ fn build_records2(d: &MultiMap<String, String>) -> Vec<MyRecord2> {
     }
     let mut recs = vec![];
     for (name, (crates, count)) in clean_name_to_hash {
+        let trunc = name.chars().rev().take(60).collect::<Vec<_>>().into_iter().rev().collect();
         recs.push(MyRecord2 {
-            symbol: name.clone(),
+            symbol: trunc,
             count: count,
             crates: crates.into_iter().collect(),
         });
