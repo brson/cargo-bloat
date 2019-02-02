@@ -138,6 +138,13 @@ struct CrateData {
     std_crates: Vec<String>,
     dep_crates: Vec<String>,
     deps_symbols: MultiMap<String, String>, // symbol, crate
+    symbol_info: MultiMap<String, SymbolInfo>
+}
+
+struct SymbolInfo {
+    hash: String,
+    fnsz: u64,
+    crate_: String,
 }
 
 #[derive(Deserialize, Debug)]
@@ -427,7 +434,9 @@ fn process_crate(args: &Args) -> Result<CrateData, Error> {
         }
     }
 
-    let deps_symbols = collect_deps_symbols(rlib_paths)?;
+    let deps_symbols = collect_deps_symbols(rlib_paths.clone())?;
+
+    let symbol_info = collect_symbol_info(rlib_paths)?;
 
     let prepare_path = |path: &path::Path| {
         path.strip_prefix(workspace_root).unwrap_or(path).to_str().unwrap().to_string()
@@ -442,6 +451,7 @@ fn process_crate(args: &Args) -> Result<CrateData, Error> {
                 std_crates,
                 dep_crates,
                 deps_symbols,
+                symbol_info,
             });
         }
     }
@@ -541,6 +551,32 @@ fn collect_deps_symbols(
 
     for (_, v) in map.iter_all_mut() {
         v.dedup();
+    }
+
+    Ok(map)
+}
+
+fn collect_symbol_info(
+    libs: Vec<(String, path::PathBuf)>
+) -> Result<MultiMap<String, SymbolInfo>, Error> {
+    let mut map = MultiMap::new();
+
+    for (name, path) in libs {
+        match collect_self_data(&path) {
+            Ok(obj_data) => {
+                for sym in obj_data.symbols {
+                    let (sym_name, hash) = sym_to_sym_hash(&sym.name);
+                    map.insert(sym_name, SymbolInfo {
+                        hash: hash,
+                        fnsz: sym.size,
+                        crate_: name.clone(),
+                    });
+                }
+            }
+            Err(e) => {
+                eprintln!("couldn't parse rlib: {}", e);
+            }
+        }        
     }
 
     Ok(map)
@@ -901,6 +937,12 @@ fn format_size(bytes: u64) -> String {
 
 
 
+
+
+
+
+
+
 fn print_stuff(mut d: CrateData, args: &Args, table: &mut Table) {
     let mut recs = build_records(&mut d.deps_symbols);
     for rec in recs {
@@ -942,20 +984,25 @@ struct MyRecord2 {
 
 use std::collections::{BTreeMap, BTreeSet};
 
+fn sym_to_sym_hash(name: &str) -> (String, String) {
+    let elts = name.split("::").count();
+    let clean_name;
+    let hash;
+    if elts > 1 {
+        clean_name = name.split("::").take(elts - 1).collect::<Vec<&str>>().join("::");
+        hash = name.rsplit("::").take(1).collect::<String>();
+    } else {
+        clean_name = name.to_string();
+        hash = "<none>".to_string();
+    }
+
+    (clean_name, hash)
+}
+
 fn build_records2(d: &MultiMap<String, String>) -> Vec<MyRecord2> {
     let mut clean_name_to_hash: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
     for (name, crates) in d {
-        let elts = name.split("::").count();
-        let clean_name;
-        let hash;
-        if elts > 1 {
-            clean_name = name.split("::").take(elts - 1).collect::<Vec<&str>>().join("::");
-            hash = name.rsplit("::").take(1).collect::<String>();
-        } else {
-            clean_name = name.to_string();
-            hash = "<none>".to_string();
-        }
-        drop(hash);
+        let (clean_name, hash) = sym_to_sym_hash(name);
         clean_name_to_hash
             .entry(clean_name)
             .or_insert(BTreeSet::new())
