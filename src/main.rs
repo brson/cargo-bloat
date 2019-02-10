@@ -928,7 +928,8 @@ fn print_stuff2(mut d: CrateData, args: &Args, table: &mut Table) {
 
 struct MyRecord2 {
     symbol: String,
-    count: usize,
+    count: usize, // crate count
+    // todo total_byte_size, cross-reference from the binary data
     crates: Vec<String>,
 }
 
