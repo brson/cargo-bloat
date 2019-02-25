@@ -908,9 +908,9 @@ fn format_size(bytes: u64) -> String {
 
 fn print_stuff2(mut d: CrateData, args: &Args, table: &mut Table) {
     let mut recs = build_records2(&d);
-    for rec in recs {
+    for rec in &recs {
         let (sym_size, total_sym_size) = if rec.approx_single_sym_size > 0 {
-            (rec.approx_single_sym_size.to_string(), rec.approx_total_sym_size.to_string())
+            (format_size(rec.approx_single_sym_size), format_size(rec.approx_total_sym_size))
         } else {
             ("<unknown>".to_string(), "<unknown>".to_string())
         };
@@ -920,9 +920,21 @@ fn print_stuff2(mut d: CrateData, args: &Args, table: &mut Table) {
             rec.sym_count.to_string(),
             sym_size,
             total_sym_size,
-            rec.symbol,
+            rec.symbol.clone(),
         ]);
     }
+
+    let crates: BTreeSet<String> = d.dep_crates.iter().cloned().collect();
+
+    table.push(&[
+        format!("t. crates: {}", crates.len()),
+        format!("t. known syms: {}", recs.iter().map(|r| r.sym_count).sum::<usize>()),
+        format!(""),
+        format!("t. known sym size: {}", format_size(recs.iter().map(|r| r.approx_total_sym_size).sum::<u64>())),
+        format!(".text size: {}", format_size(d.data.text_size)),
+    ]);
+        
+        
 }
 
 struct MyRecord2 {
@@ -947,9 +959,87 @@ fn sym_to_sym_hash(name: &str) -> (String, String) {
         hash = "<none>".to_string();
     }
 
+    let clean_name = strip_generics_from_name(clean_name);
+
     (clean_name, hash)
 }
 
+fn strip_generics_from_name(s: String) -> String {
+    if !s.contains("<") {
+        return s;
+    }
+
+    return s;
+    
+    if s.starts_with("<") {
+        if let Some((g, s)) = split_leading_generics(&s) {
+            if !s.contains(" as ") {
+                assert!(g.starts_with("<") and g.ends_with(">"));
+                let g = &g[1..g.len() - 1];
+                panic!()
+            } else {
+                panic!()
+            }
+        } else {
+            // Weird symbol
+            s
+        }
+    } else {
+        panic!()
+    }
+}
+
+fn split_leading_generics(s: &str) -> Option<(String, String)> {
+    assert!(s.starts_with("<"));
+
+    if let Some((start, end)) = find_first_paired_braces(&s) {
+        if s.len() < end + 1 + 2 + 1 {
+            // Weird symbol
+            return None;
+        }
+        let pre = &s[start..=end];
+        let post = &s[end + 1 + 2..];
+        Some((pre.to_string(), post.to_string()))
+    } else {
+        None
+    }
+}
+
+fn find_first_paired_braces(s: &str) -> Option<(usize, usize)> {
+    assert!(s.contains("<"));
+
+    let mut idx = 0;
+    let mut start = 0;
+    let mut lvl = 0;
+
+    loop {
+        let byte = s.as_bytes()[idx];
+        if byte == b'<' {
+            if start == 0 {
+                start = idx;
+            } else {
+                assert!(lvl != 0);
+            }
+            lvl += 1
+        } else if byte == b'>' {
+            if lvl == 0 || start == 0 {
+                // some invariant is broken in the symbol naming
+                return None;
+            }
+
+            lvl -= 1;
+            if lvl == 0 {
+                return Some((start, idx));
+            }
+        }
+    }
+
+    None
+}
+
+// TODO: what's the count of symbols that made it into
+// the final bin?
+// TODO: Do the same but strip the "< >" from the front of the symbol
 fn build_records2(d: &CrateData) -> Vec<MyRecord2> {
     let mut sym_to_size = HashMap::new();
     for sym in &d.data.symbols {
@@ -982,7 +1072,8 @@ fn build_records2(d: &CrateData) -> Vec<MyRecord2> {
     for (name, (crates, sym_stats)) in clean_name_to_info {
         let (sym_count, total_known_size, syms_with_size) = sym_stats;
         assert!(sym_count >= syms_with_size);
-        let trunc = name.chars().rev().take(60).collect::<Vec<_>>().into_iter().rev().collect();
+        //let trunc = name.chars().rev().take(60).collect::<Vec<_>>().into_iter().rev().collect();
+        let trunc = name.clone();
         let sym_size = if syms_with_size > 0 {
             total_known_size / syms_with_size as u64
         } else {
