@@ -92,10 +92,6 @@ struct Args {
     /// Per crate bloatedness
     crates: bool,
 
-    #[structopt(long = "stuff")]
-    /// Per crate stuffness
-    stuff: bool,
-
     #[structopt(long = "stuff2")]
     /// Per crate stuffness
     stuff2: bool,
@@ -262,10 +258,8 @@ fn main() {
 
     let mut table = if args.crates {
         Table::new(&["File", ".text", "Size", "Name"])
-    } else if args.stuff {
-        Table::new(&["Bytes", "Count", "Symbol"])
     } else if args.stuff2 {
-        Table::new(&["Count", "Symbol", "Crates"])
+        Table::new(&[ "Crate count", "Sym count", "Sym size", "Total size", "Symbol"])
     } else {
         Table::new(&["File", ".text", "Size", "Crate", "Name"])
     };
@@ -280,8 +274,6 @@ fn main() {
 
     if args.crates {
         print_crates(crate_data, &args, &mut table);
-    } else if args.stuff {
-        print_stuff(crate_data, &args, &mut table);
     } else if args.stuff2 {
         print_stuff2(crate_data, &args, &mut table);
     } else {
@@ -914,23 +906,31 @@ fn format_size(bytes: u64) -> String {
 
 
 
-fn print_stuff(mut d: CrateData, args: &Args, table: &mut Table) {
-}
-
-
 fn print_stuff2(mut d: CrateData, args: &Args, table: &mut Table) {
-    let mut recs = build_records2(&mut d.deps_symbols);
+    let mut recs = build_records2(&d);
     for rec in recs {
-        //table.push(&[rec.count.to_string(), rec.symbol, format!("\n{}", rec.crates.join(", "))]);
-        table.push(&[rec.count.to_string(), rec.symbol, rec.crates.len().to_string()]);
+        let (sym_size, total_sym_size) = if rec.approx_single_sym_size > 0 {
+            (rec.approx_single_sym_size.to_string(), rec.approx_total_sym_size.to_string())
+        } else {
+            ("<unknown>".to_string(), "<unknown>".to_string())
+        };
+
+        table.push(&[
+            rec.crates.len().to_string(),
+            rec.sym_count.to_string(),
+            sym_size,
+            total_sym_size,
+            rec.symbol,
+        ]);
     }
 }
 
 struct MyRecord2 {
     symbol: String,
-    count: usize, // crate count
-    // todo total_byte_size, cross-reference from the binary data
-    crates: Vec<String>,
+    crates: BTreeSet<String>,
+    sym_count: usize,
+    approx_single_sym_size: u64,
+    approx_total_sym_size: u64,
 }
 
 use std::collections::{BTreeMap, BTreeSet};
@@ -950,31 +950,61 @@ fn sym_to_sym_hash(name: &str) -> (String, String) {
     (clean_name, hash)
 }
 
-fn build_records2(d: &MultiMap<String, String>) -> Vec<MyRecord2> {
-    let mut clean_name_to_hash: BTreeMap<String, (BTreeSet<String>, usize)> = BTreeMap::new();
-    for (name, crates) in d {
+fn build_records2(d: &CrateData) -> Vec<MyRecord2> {
+    let mut sym_to_size = HashMap::new();
+    for sym in &d.data.symbols {
+        sym_to_size.insert(sym.name.clone(), sym.size);
+    }
+
+    // sym_count, total_known_size, syms_with_size
+    type SymStats = (usize, u64, usize);
+    
+    let mut clean_name_to_info: BTreeMap<String, (BTreeSet<String>, SymStats)> = BTreeMap::new();
+    for (name, crates) in &d.deps_symbols {
+        let size = sym_to_size.get(name).cloned().unwrap_or(0) as u64;
         let (clean_name, hash) = sym_to_sym_hash(name);
-        clean_name_to_hash
+        let default = (crates.len(), size * crates.len() as u64, if size == 0 { 0 } else { crates.len() });
+        clean_name_to_info
             .entry(clean_name)
-            .and_modify(|&mut (ref mut crate_set, ref mut sym_count)| {
+            .and_modify(|&mut (ref mut crate_set, ref mut sym_stats)| {
+                let (ref mut sym_count, ref mut total_known_size, ref mut syms_with_size) = sym_stats;
                 crate_set.append(&mut crates.iter().cloned().collect());
                 *sym_count += crates.len();
+                if size != 0 {
+                    *total_known_size += size * crates.len() as u64;
+                    *syms_with_size += crates.len();
+                }
             })
-            
-            .or_insert((BTreeSet::from(crates.into_iter().cloned().collect()), crates.len()));
+            .or_insert((BTreeSet::from(crates.into_iter().cloned().collect()), default));
     }
+
     let mut recs = vec![];
-    for (name, (crates, count)) in clean_name_to_hash {
+    for (name, (crates, sym_stats)) in clean_name_to_info {
+        let (sym_count, total_known_size, syms_with_size) = sym_stats;
+        assert!(sym_count >= syms_with_size);
         let trunc = name.chars().rev().take(60).collect::<Vec<_>>().into_iter().rev().collect();
+        let sym_size = if syms_with_size > 0 {
+            total_known_size / syms_with_size as u64
+        } else {
+            0
+        };
+        let total_sym_size = if syms_with_size > 0 {
+            sym_count as u64 * total_known_size / syms_with_size as u64
+        } else {
+            0
+        };
         recs.push(MyRecord2 {
             symbol: trunc,
-            count: count,
-            crates: crates.into_iter().collect(),
+            crates: crates,
+            sym_count: sym_count,
+            approx_single_sym_size: sym_size,
+            approx_total_sym_size: total_sym_size,
         });
     }
 
     recs.sort_by(|x, y| x.symbol.cmp(&y.symbol));
-    recs.sort_by(|x, y| x.count.cmp(&y.count));
+    recs.sort_by(|x, y| x.sym_count.cmp(&y.sym_count));
+    recs.sort_by(|x, y| x.approx_total_sym_size.cmp(&y.approx_total_sym_size));
 
     recs
 }
