@@ -271,7 +271,6 @@ fn main() {
     };
     table.set_width(term_width);
 
-
     if args.crates {
         print_crates(crate_data, &args, &mut table);
     } else if args.stuff2 {
@@ -412,10 +411,8 @@ fn process_crate(args: &Args) -> Result<CrateData, Error> {
     dep_crates.dedup();
     dep_crates.sort();
 
-    let std_paths = collect_rlib_paths(&target_dylib_path);
+    let mut std_paths = collect_rlib_paths(&target_dylib_path);
     let mut std_crates: Vec<String> = std_paths.iter().map(|v| v.0.clone()).collect();
-    rlib_paths.extend_from_slice(&std_paths);
-    std_crates.sort();
 
     // Remove std crates that was explicitly added as dependencies.
     //
@@ -423,8 +420,27 @@ fn process_crate(args: &Args) -> Result<CrateData, Error> {
     for c in &dep_crates {
         if let Some(idx) = std_crates.iter().position(|v| v == c) {
             std_crates.remove(idx);
+            std_paths.remove(idx);
         }
     }
+
+    // Actually... let's remove everything but std, core, alloc
+    let bad_indices = std_crates.iter().enumerate().filter_map(|(i, c)| {
+        let good = ["std", "core", "alloc"].contains(&c.as_str());
+        if good {
+            Some(i)
+        } else {
+            None
+        }
+    }).collect::<Vec<_>>();
+
+    for idx in bad_indices {
+        std_crates.remove(idx);
+        std_paths.remove(idx);
+    }
+
+    rlib_paths.extend_from_slice(&std_paths);
+    std_crates.sort();
 
     let deps_symbols = collect_deps_symbols(rlib_paths.clone())?;
 
@@ -530,11 +546,16 @@ fn collect_deps_symbols(
         let file = map_file(&path)?;
         let archive = goblin::archive::Archive::parse(&*file)
                           .map_err(|s| Error::Goblin(path.to_owned(), s.to_string()))?;
-        for (_, _, symbols) in archive.summarize() {
+
+        for (mn, m, symbols) in archive.summarize() {
+            //println!("name: {}, path: {}; member_name: {}, member: {}", name, path.display(), mn, m.header.name);
+            let mut num_symbols = 0;
             for sym in symbols {
                 let sym = rustc_demangle::demangle(sym).to_string();
                 map.insert(sym, name.clone());
+                num_symbols += 1;
             }
+            //println!("num_symbols: {}", num_symbols);
         }
     }
 
@@ -969,23 +990,24 @@ fn strip_generics_from_name(s: String) -> String {
         return s;
     }
 
-    return s;
-    
     if s.starts_with("<") {
-        if let Some((g, s)) = split_leading_generics(&s) {
-            if !s.contains(" as ") {
-                assert!(g.starts_with("<") and g.ends_with(">"));
-                let g = &g[1..g.len() - 1];
-                panic!()
+        if let Some((gen, rem)) = split_leading_generics(&s) {
+            if !gen.contains(" as ") {
+                assert!(gen.starts_with("<") and gen.ends_with(">"));
+                let g = &gen[1..gen.len() - 1];
+                let x = format!("{}::{}", g, rem);
+                x
             } else {
-                panic!()
+                // TODO
+                s
             }
         } else {
             // Weird symbol
             s
         }
     } else {
-        panic!()
+        // TODO
+        s
     }
 }
 
@@ -1009,29 +1031,31 @@ fn find_first_paired_braces(s: &str) -> Option<(usize, usize)> {
     assert!(s.contains("<"));
 
     let mut idx = 0;
-    let mut start = 0;
+    let mut start = None;
     let mut lvl = 0;
 
-    loop {
+    while idx < s.len() {
         let byte = s.as_bytes()[idx];
         if byte == b'<' {
-            if start == 0 {
-                start = idx;
+            if start == None {
+                start = Some(idx);
             } else {
                 assert!(lvl != 0);
             }
             lvl += 1
         } else if byte == b'>' {
-            if lvl == 0 || start == 0 {
+            if lvl == 0 || start == None {
                 // some invariant is broken in the symbol naming
                 return None;
             }
 
             lvl -= 1;
             if lvl == 0 {
-                return Some((start, idx));
+                return Some((start.unwrap(), idx));
             }
         }
+
+        idx += 1;
     }
 
     None
@@ -1040,6 +1064,10 @@ fn find_first_paired_braces(s: &str) -> Option<(usize, usize)> {
 // TODO: what's the count of symbols that made it into
 // the final bin?
 // TODO: Do the same but strip the "< >" from the front of the symbol
+// TODO: How many records in deps didn't end up in bin?
+//   - need to build w/o LTO
+// TODO: How many symbols used in bin vs compiled into libs
+// TODO: text size of libs compared to bin
 fn build_records2(d: &CrateData) -> Vec<MyRecord2> {
     let mut sym_to_size = HashMap::new();
     for sym in &d.data.symbols {
@@ -1050,7 +1078,14 @@ fn build_records2(d: &CrateData) -> Vec<MyRecord2> {
     type SymStats = (usize, u64, usize);
     
     let mut clean_name_to_info: BTreeMap<String, (BTreeSet<String>, SymStats)> = BTreeMap::new();
-    for (name, crates) in &d.deps_symbols {
+    for symbol in &d.data.symbols {
+        let name = &symbol.name;
+        let crates = d.deps_symbols.get_vec(name);
+        if crates.is_none() {
+            continue;
+        }
+        let crates = crates.unwrap();
+
         let size = sym_to_size.get(name).cloned().unwrap_or(0) as u64;
         let (clean_name, hash) = sym_to_sym_hash(name);
         let default = (crates.len(), size * crates.len() as u64, if size == 0 { 0 } else { crates.len() });
