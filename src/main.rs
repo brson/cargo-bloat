@@ -980,9 +980,13 @@ fn sym_to_sym_hash(name: &str) -> (String, String) {
         hash = "<none>".to_string();
     }
 
-    let clean_name = strip_generics_from_name(clean_name);
+    let clean_name_ = strip_generics_from_name(clean_name.clone());
 
-    (clean_name, hash)
+    if clean_name_ != clean_name {
+        println!("woo {} -> {}", clean_name, clean_name_);
+    }
+
+    (clean_name_, hash)
 }
 
 fn strip_generics_from_name(s: String) -> String {
@@ -992,14 +996,13 @@ fn strip_generics_from_name(s: String) -> String {
 
     if s.starts_with("<") {
         if let Some((gen, rem)) = split_leading_generics(&s) {
+            let gen_less_one_bracket = &gen[1..gen.len() - 1];
             if !gen.contains(" as ") {
-                assert!(gen.starts_with("<") and gen.ends_with(">"));
-                let g = &gen[1..gen.len() - 1];
-                let x = format!("{}::{}", g, rem);
-                x
+                assert!(gen.starts_with("<") && gen.ends_with(">"));
+                format!("{}::{}", gen_less_one_bracket, rem)
             } else {
-                // TODO
-                s
+                let g = extract_as_type(&gen_less_one_bracket);
+                format!("{}::{}", g, rem)
             }
         } else {
             // Weird symbol
@@ -1028,8 +1031,6 @@ fn split_leading_generics(s: &str) -> Option<(String, String)> {
 }
 
 fn find_first_paired_braces(s: &str) -> Option<(usize, usize)> {
-    assert!(s.contains("<"));
-
     let mut idx = 0;
     let mut start = None;
     let mut lvl = 0;
@@ -1059,6 +1060,16 @@ fn find_first_paired_braces(s: &str) -> Option<(usize, usize)> {
     }
 
     None
+}
+
+fn extract_as_type(s: &str) -> String {
+    assert!(s.contains(" as "));
+    let post = s.rsplit(" as ").take(1).next().unwrap();
+    if let Some((_, end)) = find_first_paired_braces(post) {
+        post[..=end].to_string()
+    } else {
+        post.to_string()
+    }
 }
 
 // TODO: what's the count of symbols that made it into
