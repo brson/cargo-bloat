@@ -425,7 +425,7 @@ fn process_crate(args: &Args) -> Result<CrateData, Error> {
     }
 
     // Actually... let's remove everything but std, core, alloc
-    let bad_indices = std_crates.iter().enumerate().filter_map(|(i, c)| {
+    let good_indices = std_crates.iter().enumerate().filter_map(|(i, c)| {
         let good = ["std", "core", "alloc"].contains(&c.as_str());
         if good {
             Some(i)
@@ -434,10 +434,22 @@ fn process_crate(args: &Args) -> Result<CrateData, Error> {
         }
     }).collect::<Vec<_>>();
 
-    for idx in bad_indices {
-        std_crates.remove(idx);
-        std_paths.remove(idx);
-    }
+    let mut  std_crates = std_crates.into_iter().enumerate()
+        .filter_map(|(i, c)| {
+            if good_indices.contains(&i) {
+                Some(c)
+            } else {
+                None
+            }
+        }).collect::<Vec<_>>();
+    let std_paths = std_paths.into_iter().enumerate()
+        .filter_map(|(i, p)| {
+            if good_indices.contains(&i) {
+                Some(p)
+            } else {
+                None
+            }
+        }).collect::<Vec<_>>();
 
     rlib_paths.extend_from_slice(&std_paths);
     std_crates.sort();
@@ -980,13 +992,9 @@ fn sym_to_sym_hash(name: &str) -> (String, String) {
         hash = "<none>".to_string();
     }
 
-    let clean_name_ = strip_generics_from_name(clean_name.clone());
+    let clean_name = strip_generics_from_name(clean_name.clone());
 
-    if clean_name_ != clean_name {
-        println!("woo {} -> {}", clean_name, clean_name_);
-    }
-
-    (clean_name_, hash)
+    (clean_name, hash)
 }
 
 fn strip_generics_from_name(s: String) -> String {
@@ -1118,8 +1126,6 @@ fn build_records2(d: &CrateData) -> Vec<MyRecord2> {
     for (name, (crates, sym_stats)) in clean_name_to_info {
         let (sym_count, total_known_size, syms_with_size) = sym_stats;
         assert!(sym_count >= syms_with_size);
-        //let trunc = name.chars().rev().take(60).collect::<Vec<_>>().into_iter().rev().collect();
-        let trunc = name.clone();
         let sym_size = if syms_with_size > 0 {
             total_known_size / syms_with_size as u64
         } else {
@@ -1131,7 +1137,7 @@ fn build_records2(d: &CrateData) -> Vec<MyRecord2> {
             0
         };
         recs.push(MyRecord2 {
-            symbol: trunc,
+            symbol: name,
             crates: crates,
             sym_count: sym_count,
             approx_single_sym_size: sym_size,
@@ -1142,6 +1148,13 @@ fn build_records2(d: &CrateData) -> Vec<MyRecord2> {
     recs.sort_by(|x, y| x.symbol.cmp(&y.symbol));
     recs.sort_by(|x, y| x.sym_count.cmp(&y.sym_count));
     recs.sort_by(|x, y| x.approx_total_sym_size.cmp(&y.approx_total_sym_size));
+
+    for rec in &recs {
+        if rec.crates.len() == 5 {
+            //println!("symbol: {}", rec.symbol);
+            //println!("crates: {:?}", rec.crates);
+        }
+    }
 
     recs
 }
